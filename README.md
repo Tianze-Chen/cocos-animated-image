@@ -1,6 +1,6 @@
 # animated-image（Cocos Creator 扩展插件）
 
-Cocos Creator 3.8.x 动图播放插件，支持 GIF、APNG、WebP、PNG、JPEG 格式。GIF / APNG 是纯 TypeScript 实现，WebP 走 wasm（Web / 小游戏 / 编辑器）+ 原生 C++ 插件（原生平台）。运行时代码通过 `asset-db.mount` 只读挂载进工程，支持按需裁剪格式以减小包体。
+Cocos Creator 3.8.x 动图播放插件，支持 GIF、APNG、WebP、PNG、JPEG 格式。GIF / APNG 是纯 TypeScript 实现，WebP 走 wasm（Web / 小游戏 / 编辑器）+ 原生 C++ 插件（原生平台）。运行时代码通过 `asset-db.mount` 只读挂载进工程，格式可按需裁剪（注意：注释 `codecs.ts` 只省运行时开销，减包体要删文件，见 [格式裁剪](#格式裁剪)）。
 
 提取自 `NewProject_5` 工程（2026-08-07 版本，含内存监控补丁）。
 
@@ -36,7 +36,7 @@ Web 平台优先使用浏览器 WebCodecs API（如果可用），否则自动�
 
 ## 格式裁剪
 
-默认启用 GIF / APNG / WebP / PNG / JPEG。如果不需要某种格式，可以编辑挂载目录下的 `runtime/codecs.ts` 注释掉对应代码以减小包体（挂载为只读，请直接编辑 `extensions/animated-image/runtime/codecs.ts` 源文件）：
+默认启用 GIF / APNG / WebP / PNG / JPEG。不需要某种格式时，编辑挂载目录下的 `runtime/codecs.ts` 注释掉对应的一组（挂载为只读，请直接编辑 `extensions/animated-image/runtime/codecs.ts` 源文件）：
 
 ```typescript
 // ---- GIF ----
@@ -55,9 +55,23 @@ registerDecoder('image/gif', createGifDecoder);
 // registerDecoder('image/webp', createWebpDecoder);
 ```
 
-注释掉的格式不会被打包，其依赖的文件（如 `zlib.min.ts`、`runtime/webp/animated-webp.js`）也不会进入构建产物。
+### ⚠️ 注释掉 ≠ 不进包体
 
-> **WebP 的 `.wasm` 是例外**：`animated-webp.wasm` 由构建钩子（`editor/build/hooks.js`）无条件拷进产物 `cocos-js/`，钩子看不到工程留了哪些格式。裁掉 WebP 后运行时不会去加载它，但文件还在 —— 想省掉这 ~89KB，把 `package.json` 里的 `contributions.builder` 一起删掉，或者构建后手动删除该文件。
+注释掉一组之后，那个格式在运行时不再被识别（`registerDecoder` 没调用，遇到对应字节会走「不支持」路径），**但对应的脚本文件仍然在构建产物里**。
+
+原因是 Cocos Creator 3.8 **把脚本目录下的每个脚本都当入口打进 bundle，不做未引用脚本的 tree-shaking** —— 场景和 prefab 按 UUID 引用组件，构建器没法证明哪个脚本是死的。实测（微信小游戏产物 `assets/main/index.js`）：13 个源码 `.ts` 对应 13 个 `_RF.push` 模块注册，其中包括没有任何文件 import 的 `index.ts`、场景引用 0 次的 `AnimatedImageDemo.ts`，以及编译后本该什么都不剩的纯 `interface` 文件 `types.ts`。
+
+所以注释掉 `codecs.ts` 里的一组，省的是**运行时开销**（不解析、不加载 wasm、不占内存），**不是包体**。
+
+**真要从包体里去掉一个格式，得删文件：**
+
+| 要去掉 | 除了注释 `codecs.ts`，还要 |
+|---|---|
+| GIF | 删 `runtime/gif-decoder.ts` + `.meta` |
+| APNG | 删 `runtime/apng-decoder.ts`、`runtime/zlib.min.ts` + `.meta` |
+| WebP | 删 `runtime/webp-decoder.ts`、整个 `runtime/webp/` + 各自 `.meta`；再从 `package.json` 删掉 `contributions.builder`（否则构建钩子仍会把 ~89KB 的 `animated-webp.wasm` 拷进 `cocos-js/`）和 `contributions.native.plugins`（否则原生包仍会编进 ~60KB 的 C++ 解码器 —— 它由 `cc_plugin.json` 无条件接入，和 TS 侧注册了什么无关） |
+| Demo | 删 `runtime/AnimatedImageDemo.ts` + `.meta`，并从 `runtime/index.ts` 去掉那行 re-export |
+
 
 ## 使用方式
 
