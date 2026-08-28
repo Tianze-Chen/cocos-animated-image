@@ -15,3 +15,10 @@ registerDecoder('image/gif', createGifDecoder);
 // apng-decoder.ts: ~14KB + zlib.min.ts: ~21KB, 合计 ~35KB
 import { createApngDecoder } from './apng-decoder';
 registerDecoder('image/apng', createApngDecoder);
+
+// ---- WebP ----
+// webp-decoder.ts + webp/index.ts: ~8KB TS；解码本体是外置的
+// animated-webp.wasm ~89KB（web / 小游戏 / 编辑器，落在 cocos-js/），原生走 JSB 不带 wasm
+// 需要引擎导出 cc.wasm；缺失时降级为只显示首帧（见 webp-decoder.ts）
+import { createWebpDecoder } from './webp-decoder';
+registerDecoder('image/webp', createWebpDecoder);

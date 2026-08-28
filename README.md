@@ -1,6 +1,6 @@
 # animated-image（Cocos Creator 扩展插件）
 
-Cocos Creator 3.8.x 动图播放插件，支持 GIF、APNG、PNG、JPEG 格式。纯 TypeScript 实现，运行时代码通过 `asset-db.mount` 只读挂载进工程，支持按需裁剪格式以减小包体。
+Cocos Creator 3.8.x 动图播放插件，支持 GIF、APNG、WebP、PNG、JPEG 格式。GIF / APNG 是纯 TypeScript 实现，WebP 走 wasm（Web / 小游戏 / 编辑器）+ 原生 C++ 插件（原生平台）。运行时代码通过 `asset-db.mount` 只读挂载进工程，支持按需裁剪格式以减小包体。
 
 提取自 `NewProject_5` 工程（2026-08-07 版本，含内存监控补丁）。
 
@@ -18,23 +18,25 @@ Cocos Creator 3.8.x 动图播放插件，支持 GIF、APNG、PNG、JPEG 格式�
 
 3. 验证：`<你的工程>/temp/logs/project.log` 中出现 `[animated-image] extension loaded` 即加载成功；资源管理器中会出现挂载的 `animated-image` 运行时脚本。
 
+   同一份日志里紧跟着的 `staged animated-webp.wasm for the editor at …` 说明 WebP 的 wasm 已就位；如果看到的是 `could not stage animated-webp.wasm` 的 warning，扩展仍然正常工作，只是编辑器/预览里的 WebP 会退成首帧静态图。
+
 ## 支持格式
 
 | 格式 | 动画 | 解码方式 | 包体大小 |
 |------|------|----------|----------|
 | GIF | 支持 | 内置 JS 解码器 | ~13KB |
 | APNG | 支持 | 内置 JS 解码器 | ~35KB（含 zlib） |
-| WebP | 不支持 | 检测到即报错 | — |
+| WebP | 支持 | wasm（非原生）/ C++ 插件（原生） | ~89KB wasm，见下 |
 | PNG | 静态 | WebCodecs / Canvas | — |
 | JPEG | 静态 | WebCodecs / Canvas | — |
 
-> **WebP 不支持**：组件检测到 `image/webp` 字节会直接报错，不进行解码。
+> **WebP 需要导出 `cc.wasm` 的引擎**（非原生平台）。引擎不满足时不会报错，而是降级成只显示首帧静态图并打一条 warning。详见下面的 [WebP 支持](#webp-支持)。
 
 Web 平台优先使用浏览器 WebCodecs API（如果可用），否则自动回退到内置解码器。
 
 ## 格式裁剪
 
-默认启用 GIF / APNG / PNG / JPEG。如果不需要某种格式，可以编辑挂载目录下的 `runtime/codecs.ts` 注释掉对应代码以减小包体（挂载为只读，请直接编辑 `extensions/animated-image/runtime/codecs.ts` 源文件）：
+默认启用 GIF / APNG / WebP / PNG / JPEG。如果不需要某种格式，可以编辑挂载目录下的 `runtime/codecs.ts` 注释掉对应代码以减小包体（挂载为只读，请直接编辑 `extensions/animated-image/runtime/codecs.ts` 源文件）：
 
 ```typescript
 // ---- GIF ----
@@ -46,9 +48,16 @@ registerDecoder('image/gif', createGifDecoder);
 // apng-decoder.ts: ~14KB + zlib.min.ts: ~21KB, 合计 ~35KB
 // import { createApngDecoder } from './apng-decoder';       // ← 注释掉即可排除
 // registerDecoder('image/apng', createApngDecoder);
+
+// ---- WebP ----
+// webp-decoder.ts + webp/index.ts: ~8KB TS；解码本体是外置的
+// import { createWebpDecoder } from './webp-decoder';       // ← 注释掉即可排除
+// registerDecoder('image/webp', createWebpDecoder);
 ```
 
-注释掉的格式不会被打包，其依赖的文件（如 `zlib.min.ts`）也不会进入构建产物。
+注释掉的格式不会被打包，其依赖的文件（如 `zlib.min.ts`、`runtime/webp/animated-webp.js`）也不会进入构建产物。
+
+> **WebP 的 `.wasm` 是例外**：`animated-webp.wasm` 由构建钩子（`editor/build/hooks.js`）无条件拷进产物 `cocos-js/`，钩子看不到工程留了哪些格式。裁掉 WebP 后运行时不会去加载它，但文件还在 —— 想省掉这 ~89KB，把 `package.json` 里的 `contributions.builder` 一起删掉，或者构建后手动删除该文件。
 
 ## 使用方式
 
@@ -160,21 +169,81 @@ AnimatedImagePlayer.forceBuiltinDecoder = true;
 
 ## 平台支持
 
-| 平台 | GIF / APNG | WebP | 静态图 | WebCodecs |
-|------|------------|------|--------|-----------|
-| Web (Chrome/Edge) | JS 解码器 | 不支持（报错） | Canvas | 支持 |
-| Web (其他浏览器) | JS 解码器 | 不支持（报错） | Canvas | 不支持 |
-| 小游戏（微信/抖音/百度等） | JS 解码器 | 不支持（报错） | 临时文件 + Canvas | 不支持 |
-| 原生平台 | JS 解码器 | 不支持（报错） | Image + Canvas | 不支持 |
-| **Sud 老平台（Sud 沙盒）** | JS 解码器 | 不支持（报错） | Image | 不支持 |
+| 平台 | GIF / APNG | WebP 动图 | 静态图 | WebCodecs |
+|------|------------|-----------|--------|-----------|
+| Web (Chrome/Edge) | JS 解码器 | WebCodecs（优先）/ wasm | Canvas | 支持 |
+| Web (其他浏览器) | JS 解码器 | wasm | Canvas | 不支持 |
+| 小游戏（微信/抖音/百度等） | JS 解码器 | wasm | 临时文件 + Canvas | 不支持 |
+| 编辑器 / 浏览器预览 | JS 解码器 | wasm（`external:` 协议） | Canvas | 视浏览器而定 |
+| 原生平台（Android / iOS / Windows / macOS） | JS 解码器 | 原生 C++ 插件（JSB） | Image + Canvas | 不支持 |
+| Native Simulator | JS 解码器 | **不支持**（见下） | Image + Canvas | 不支持 |
+| **Sud 老平台（Sud 沙盒）** | JS 解码器 | 视是否有 `cc.wasm` | Image | 不支持 |
+
+## WebP 支持
+
+WebP 的解码内核是一份 C 代码（`native/webp-core/webp_anim.c`，基于 vendored libwebp 1.6.0 的 demux/anim 模块），编成两个后端：
+
+- **非原生平台** —— 编成 `animated-webp.wasm`（90,593 字节，~89KB），通过引擎的 `cc.wasm` 加载。
+- **原生平台** —— 编成静态库，通过 `CC_PLUGIN_ENTRY` 自动注册成 `globalThis.__animatedImageWebP` 的 JSB 绑定。原生包里**没有** wasm。
+
+两个后端共用同一份 C 内核和同一套调用形状，逐帧输出必须逐字节相同。
+
+### 引擎要求（仅非原生平台）
+
+需要一个把 WebAssembly 接口导出到 `cc.wasm` 命名空间的引擎（对应 [cocos/cocos4#306](https://github.com/cocos/cocos4/pull/306) 这个导出；引擎源码里看 `exports/webassembly.ts` 在不在）。可执行判据：
+
+```typescript
+typeof (cc as any).wasm?.instantiateWasm === 'function'   // true 才有 WebP 动图
+```
+
+**引擎不满足时不会崩** —— `runtime/webp-decoder.ts` 会捕获后端加载失败，退回到首帧静态图（`createImageBitmap` / `Image` 都原生支持 WebP），并打印一条 warning 说明原因。所以插件在任何 3.8.x 上都能装，只是老引擎下 WebP 只显示第一帧。
+
+原生平台**不做这个降级**：`NATIVE` 下拿不到 `globalThis.__animatedImageWebP` 会直接抛错。原生上退回 wasm 反而会把「原生插件没编进去」掩盖成「能跑但慢」，那样的问题没人会注意到。
+
+### 包体开销
+
+| 平台 | 开销 | 落在哪 |
+|---|---|---|
+| Web / 小游戏 | ~89KB `.wasm` + ~10KB glue `.js` | `.wasm` 在产物 `cocos-js/`，glue 随脚本打包 |
+| 原生 | ~60KB demux 目标码（估算，静态链接） | 可执行文件 / `.so`，无 wasm |
+| 编辑器 / 预览 | 0（不进产物） | `main.js` 拷进 `<引擎>/native/external/` |
+
+小游戏有首包体积预算，`.wasm` 落在 `cocos-js/` 而不是主脚本里，按各平台的分包规则处理。
+
+### 交付路径（无需手工步骤）
+
+`.wasm` 的源文件是 `native/wasm/prebuilt/animated-webp.wasm`，由两条路送到各宿主实际会去找的位置：
+
+- `main.js` 的 `load()` 把它拷进 `<引擎>/native/external/` —— 编辑器场景视图（node `fs` 读）和浏览器预览（`/engine_external/` 端点）都从这里解析 `external:animated-webp.wasm`。
+- `editor/build/hooks.js` 的 `onAfterBuild` 把它拷进产物 `cocos-js/` —— web 构建相对 `import.meta.url` 取它，小游戏把 `cocos-js/<name>` 当**路径**交给 `CCWebAssembly.instantiate`（微信的 `WXWebAssembly` 只吃路径不吃字节，所以必须是独立文件，不能内嵌 base64）。
+
+原生插件同样是自动的：`package.json` 的 `contributions.native.plugins` 指向 `native/cc_plugin.json`，出普通原生包即自动编译、自动注册。验证点是构建后的工程 `native/engine/<平台>/Pre-AutoLoadPlugins.cmake` 里出现 `animated_webp`。
+
+### 已知限制
+
+- **Native Simulator 下 WebP 动图不可用。** 官方 Simulator 不扫工程 `extensions/` 里的 `cc_plugin.json`，插件根本没编进去，`globalThis.__animatedImageWebP` 不存在。需要给 Simulator 的 CMake 另加一个 `CMAKE_PROJECT_INCLUDE` 钩子才能接上。用真机 / 桌面原生包测 WebP。
+- **原生插件只覆盖 Android / iOS / Windows / macOS。** 引擎的 `plugins_parser.js` 只给这四个平台映射了搜索路径后缀，Linux / OHOS / HarmonyOS 走不到 `find_package`。这些平台上 WebP 动图不可用。
+- **wasm 产物需要 emsdk 才能重新生成**，但已经提交进仓库（`native/wasm/prebuilt/`），普通使用不需要装。重新构建见 `native/wasm/CMakeLists.txt` 的头注释。`.js` 和 `.wasm` 必须同一次构建一起换。
 
 ## 插件结构
 
 ```
 animated-image/
-├── package.json             # 扩展清单（asset-db.mount 只读挂载 runtime/）
-├── main.js                  # 主进程入口（仅 load/unload 日志）
+├── package.json             # 扩展清单（asset-db.mount 只读挂载 + native.plugins + builder）
+├── main.js                  # 主进程入口（把 WebP wasm 拷进 <引擎>/native/external/）
 ├── README.md                # 本文档
+├── editor/build/            # 构建贡献
+│   ├── builder.js           # 注册钩子
+│   └── hooks.js             # onAfterBuild：把 .wasm 拷进产物 cocos-js/（原生跳过）
+├── native/                  # WebP 解码器：一份 C 内核，两个后端
+│   ├── cc_plugin.json       # 原生插件清单（target: animated_webp）
+│   ├── animated_webp.cmake  # 共享 cmake（STATIC lib + CC_PLUGIN_STATIC）
+│   ├── {android,ios,windows,mac}/animated_webp-config.cmake
+│   ├── animated_webp_plugin.cpp     # CC_PLUGIN_ENTRY + addRegisterCallback
+│   ├── jsb_animated_webp_manual.*   # JSB 手写绑定 → globalThis.__animatedImageWebP
+│   ├── webp-core/           # 共享 C 内核（5 函数流式 ABI）+ 符号前缀头
+│   ├── third_party/libwebp/ # vendored libwebp 1.6.0（decode + demux 子集）
+│   └── wasm/                # emcmake 构建脚本 + prebuilt/animated-webp.{js,wasm}
 └── runtime/                 # 挂载进工程只读的运行时代码
     ├── index.ts             # 入口，barrel 导出
     ├── codecs.ts            # 格式配置（编辑此文件裁剪格式）
@@ -183,9 +252,14 @@ animated-image/
     ├── AnimatedImagePlayer.ts # 底层播放器（含帧缓存内存统计）
     ├── AnimatedImageDemo.ts # 演示组件（可选，不影响核心功能）
     ├── image-decoder.ts     # 解码器工厂（WebCodecs + 内置回退）
+    ├── static-decoder.ts    # 单帧静态解码（PNG/JPEG/WebP 降级共用）
     ├── gif-decoder.ts       # GIF 解码器（纯 JS, ~13KB）
     ├── apng-decoder.ts      # APNG 解码器（纯 JS, ~14KB）
     ├── zlib.min.ts          # zlib inflate（APNG 解压用, ~21KB）
+    ├── webp-decoder.ts      # WebP 解码器（顺序游标 + 降级到首帧）
+    ├── webp/
+    │   ├── index.ts         # 后端加载器（NATIVE → JSB；其余 → cc.wasm）
+    │   └── animated-webp.js # 生成的 CJS glue（.wasm 不在这里，见「交付路径」）
     ├── mime-sniff.ts        # MIME 类型嗅探
     ├── bytes.ts             # 网络响应字节归一化（小游戏兼容）
     ├── types.ts             # 接口定义

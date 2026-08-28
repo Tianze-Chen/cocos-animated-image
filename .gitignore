@@ -1,0 +1,9 @@
+# Emscripten build tree. The artifacts it produces are committed under
+# native/wasm/prebuilt/ instead, so users do not need emsdk.
+native/wasm/build/
+
+# Editor / OS noise
+node_modules/
+temp/
+.DS_Store
+Thumbs.db

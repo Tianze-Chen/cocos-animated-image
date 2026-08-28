@@ -1,0 +1,13 @@
+{
+    "name": "animated-webp",
+    "version": "1.0.0",
+    "engine-version": ">=3.8.0",
+    "author": "animated-image",
+    "description": "Animated WebP decoding for the animated-image plugin: libwebp demuxer + __animatedImageWebP JSB binding.",
+    "platforms": ["android", "ios", "windows", "mac"],
+    "modules": [
+        {
+            "target": "animated_webp"
+        }
+    ]
+}

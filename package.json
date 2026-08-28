@@ -2,7 +2,7 @@
     "name": "animated-image",
     "package_version": 2,
     "version": "1.0.0",
-    "description": "AnimatedImage — GIF / APNG / PNG / JPEG animated image player for Cocos Creator 3.8.x. Pure TypeScript runtime, mounted read-only via asset-db.mount.",
+    "description": "AnimatedImage — GIF / APNG / WebP / PNG / JPEG animated image player for Cocos Creator 3.8.x. TypeScript runtime mounted read-only via asset-db.mount, with WebP decoded by wasm off-native and by a native C++ plugin on native.",
     "author": "animated-image",
     "main": "./main.js",
     "editor": ">=3.8.0",
@@ -12,6 +12,14 @@
                 "path": "./runtime",
                 "readonly": true
             }
-        }
+        },
+        "native": {
+            "plugins": {
+                "animated-webp": {
+                    "cc_plugin.json": "./native/cc_plugin.json"
+                }
+            }
+        },
+        "builder": "./editor/build/builder.js"
     }
 }
