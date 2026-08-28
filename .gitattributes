@@ -1,0 +1,11 @@
+# core.autocrlf is on for this checkout, and the committed .wasm survives only
+# because git sniffs the leading NUL in its "\0asm" magic and infers binary.
+# Say it outright rather than depending on content sniffing: a corrupted .wasm
+# fails in the least helpful way possible — pal/wasm's fetchBuffer error path is
+# a noop, so a bad load never rejects, it just hangs forever with no message.
+*.wasm binary
+
+# Generated Emscripten glue. Keep it byte-stable so the .js and .wasm pair that
+# were built together stay diffable as a pair.
+native/wasm/prebuilt/*.js -text
+runtime/webp/animated-webp.js -text
