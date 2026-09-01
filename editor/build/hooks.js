@@ -17,10 +17,11 @@
  * runtime/webp/index.ts passes the bare name `animated-webp.wasm`, matching the
  * destination file name below.
  *
- * If the WebP codec group in runtime/codecs.ts is commented out the runtime never
- * loads this file, but it is still copied — the hook cannot see which codecs the
- * project kept. Delete it from the output, or drop this contribution, if the ~89KB
- * matters.
+ * Whether WebP is wanted at all comes from trim.json, which the format panel
+ * derives from the project's profile (see editor/trim.js). It is read with plain
+ * fs rather than Editor.Profile because this file runs in the builder's worker
+ * process, where the Editor API is not available. A missing or unreadable
+ * trim.json means "keep everything", matching the committed default.
  */
 
 const fs = require('fs');
@@ -28,6 +29,7 @@ const path = require('path');
 
 const WASM_NAME = 'animated-webp.wasm';
 const WASM_SOURCE = path.join(__dirname, '..', '..', 'native', 'wasm', 'prebuilt', WASM_NAME);
+const TRIM_JSON = path.join(__dirname, 'trim.json');
 
 // Platforms that use the JSB binding rather than wasm, so they need no .wasm.
 // linux / ohos / harmonyos are listed even though the native plugin mechanism
@@ -46,6 +48,22 @@ function log (msg) {
 
 function shouldCopy (platform) {
     return !platform || !NATIVE_PLATFORMS.has(platform);
+}
+
+// Absent / unparseable / missing key all mean "kept", so a user who never opens
+// the panel gets exactly today's behaviour.
+function readTrim () {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(TRIM_JSON, 'utf8'));
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function describeTrim (trim) {
+    const keys = ['gif', 'apng', 'webp', 'demo'];
+    return keys.map((k) => `${k}=${trim[k] === false ? 'off' : 'on'}`).join(' ');
 }
 
 // The output root has appeared under both names across editor versions.
@@ -70,6 +88,16 @@ exports.onAfterBuild = async function onAfterBuild (options, result) {
     // A throw here fails the whole build, which would be a wildly
     // disproportionate outcome for one optional codec's payload.
     try {
+        // The only signal in the build log that says which formats this package
+        // actually contains. Worth one line: everything else about trimming is
+        // invisible until you diff the output.
+        const trim = readTrim();
+        log(`formats: ${describeTrim(trim)}`);
+
+        if (trim.webp === false) {
+            log(`skip ${WASM_NAME} (WebP 已裁剪)`);
+            return;
+        }
         const platform = options && options.platform;
         if (!shouldCopy(platform)) {
             log(`skip ${WASM_NAME} (native platform: ${platform})`);
