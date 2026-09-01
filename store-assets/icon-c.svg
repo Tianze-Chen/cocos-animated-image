@@ -1,0 +1,45 @@
+<svg width="1200" height="900" viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#232946"/>
+      <stop offset="100%" stop-color="#12152B"/>
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#05070F" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="900" fill="url(#bg)"/>
+  <circle cx="130" cy="120" r="420" fill="#4F8CFF" opacity="0.08"/>
+  <circle cx="1120" cy="840" r="380" fill="#8A5CF6" opacity="0.08"/>
+
+  <g transform="rotate(-3 600 450) translate(-25 0)">
+    <!-- motion lines -->
+    <g fill="#FFFFFF" opacity="0.55">
+      <rect x="150" y="420" width="80" height="16" rx="8"/>
+      <rect x="185" y="470" width="56" height="16" rx="8"/>
+      <rect x="155" y="520" width="68" height="16" rx="8"/>
+    </g>
+
+    <!-- stacked frames (animation) -->
+    <g fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="10">
+      <rect x="430" y="150" width="460" height="345" rx="36"/>
+    </g>
+    <g fill="none" stroke="#FFFFFF" stroke-opacity="0.32" stroke-width="10">
+      <rect x="390" y="190" width="460" height="345" rx="36"/>
+    </g>
+
+    <!-- front photo card -->
+    <g filter="url(#shadow)">
+      <rect x="350" y="230" width="460" height="345" rx="36" fill="#F4F6FF"/>
+    </g>
+    <path d="M 390 530 L 510 360 L 585 460 L 650 380 L 770 530 Z" fill="#6C7BFF"/>
+    <circle cx="670" cy="330" r="34" fill="#FFC24D"/>
+
+    <!-- play -->
+    <g filter="url(#shadow)">
+      <circle cx="830" cy="640" r="130" fill="#4F8CFF"/>
+    </g>
+    <path d="M 795 575 L 905 640 L 795 705 Z" fill="#FFFFFF"/>
+  </g>
+</svg>
