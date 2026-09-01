@@ -1,6 +1,6 @@
 # animated-image（Cocos Creator 扩展插件）
 
-Cocos Creator 3.8.x 动图播放插件，支持 GIF、APNG、WebP、PNG、JPEG 格式。GIF / APNG 是纯 TypeScript 实现，WebP 走 wasm（Web / 小游戏 / 编辑器）+ 原生 C++ 插件（原生平台），但**默认关闭** —— 它的非原生后端依赖引擎导出 `cc.wasm`，该能力尚未进入任何正式版引擎（见 [WebP 支持](#webp-支持)）。运行时代码通过 `asset-db.mount` 只读挂载进工程。**不需要的格式可以在面板里勾掉，真正不进构建产物**（TS、`.wasm`、原生 C++ 三份载荷一起消失），见 [格式裁剪](#格式裁剪)。
+Cocos Creator 动图播放插件，支持 GIF、APNG、WebP、PNG、JPEG 格式。**插件本体（GIF / APNG / 静态图、面板、格式裁剪）实测兼容 3.3+；WebP 需要 3.8+**（见 [WebP 支持](#webp-支持)）。GIF / APNG 是纯 TypeScript 实现，WebP 走 wasm（Web / 小游戏 / 编辑器）+ 原生 C++ 插件（原生平台），但**默认关闭** —— 它的非原生后端依赖引擎导出 `cc.wasm`，该能力尚未进入任何正式版引擎（见 [WebP 支持](#webp-支持)）。运行时代码通过 `asset-db.mount` 只读挂载进工程。**不需要的格式可以在面板里勾掉，真正不进构建产物**（TS、`.wasm`、原生 C++ 三份载荷一起消失），见 [格式裁剪](#格式裁剪)。
 
 提取自 `NewProject_5` 工程（2026-08-07 版本，含内存监控补丁）。
 
@@ -38,7 +38,7 @@ Web 平台优先使用浏览器 WebCodecs API（如果可用），否则自动�
 
 ## 格式裁剪
 
-默认启用 GIF / APNG / Demo；**WebP 默认关闭** —— 正式版引擎尚未导出 WebP 非原生后端依赖的 `cc.wasm`（见 [WebP 支持](#webp-支持)），原生平台不受影响。要改选择，打开 **面板 → AnimatedImage → 格式裁剪**，勾选/取消勾选后点「应用」：
+默认启用 GIF / APNG / Demo；**WebP 默认关闭** —— 正式版引擎尚未导出 WebP 非原生后端依赖的 `cc.wasm`（见 [WebP 支持](#webp-支持)），原生平台不受影响。要改选择，打开顶部主菜单栏的 **面板 → AnimatedImage → 格式裁剪**（「面板」下拉里的 AnimatedImage 子菜单，面板标题「AnimatedImage 格式」），勾选/取消勾选后点「应用」：
 
 ```
 ┌────────────────────────────────────────┐
@@ -175,11 +175,13 @@ player.destroy();
 
 `AnimatedImageDemo` 是演示组件，可快速验证功能是否正常：
 
-1. 在场景中创建一个空节点
+1. 在 **Canvas 下**创建一个空节点（不要直接挂在场景根上）
 2. 添加 `AnimatedImageDemo` 组件（代码 `import { AnimatedImageDemo } from 'db://animated-image/AnimatedImageDemo'`）
 3. 运行预览
 
 Demo 会自动创建完整的测试 UI（格式切换按钮、解码器切换、状态栏、内存监控面板），无需手动搭建场景。键盘快捷键：`Space` 暂停/播放、`R` 从头播放、`L` 切换循环、`Up`/`Down` 播放速率 ±0.25。
+
+> **挂错位置不会报错，但整个 demo 不显示。** UI 相机只渲染 UI_2D 层的节点；在场景根上建的空节点默认在 DEFAULT 层，demo 创建的所有 UI 会跟着静默不可见（组件本身照常运行、内存日志照常输出）。组件启动时会把节点 layer 自动对齐到 Canvas 并打一条 warning——看到这条 warning 就说明节点挂错位置了。
 
 ## 强制使用内置解码器
 
@@ -251,6 +253,7 @@ typeof (cc as any).wasm?.instantiateWasm === 'function'   // true 才有 WebP �
 
 ### 已知限制
 
+- **WebP 实际只在 3.8+ 可用，尽管插件本体兼容 3.3+。** GIF / APNG / 静态图、面板和格式裁剪实测可下到 3.3；但 WebP 的非原生后端要 `cc.wasm`（正式版引擎都还没有），原生 C++ 插件机制（`contributions.native.plugins` / cc_plugin.json，`engine-version >=3.8.0`）也只按 3.8 验证过。老编辑器上勾选 WebP 只会得到首帧降级（非原生）或直接报错（原生）—— 反正它默认关闭。
 - **Native Simulator 下 WebP 动图不可用。** 官方 Simulator 不扫工程 `extensions/` 里的 `cc_plugin.json`，插件根本没编进去，`globalThis.__animatedImageWebP` 不存在。需要给 Simulator 的 CMake 另加一个 `CMAKE_PROJECT_INCLUDE` 钩子才能接上。用真机 / 桌面原生包测 WebP。
 - **原生插件只覆盖 Android / iOS / Windows / macOS。** 引擎的 `plugins_parser.js` 只给这四个平台映射了搜索路径后缀，Linux / OHOS / HarmonyOS 走不到 `find_package`。这些平台上 WebP 动图不可用。
 - **wasm 产物需要 emsdk 才能重新生成**，但已经提交进仓库（`native/wasm/prebuilt/`），普通使用不需要装。重新构建见 `native/wasm/CMakeLists.txt` 的头注释。`.js` 和 `.wasm` 必须同一次构建一起换。

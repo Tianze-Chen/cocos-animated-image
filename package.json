@@ -2,10 +2,10 @@
     "name": "animated-image",
     "package_version": 2,
     "version": "1.1.0",
-    "description": "AnimatedImage — GIF / APNG / WebP / PNG / JPEG animated image player for Cocos Creator 3.8.x. TypeScript runtime mounted read-only via asset-db.mount, with WebP decoded by wasm off-native and by a native C++ plugin on native. Unwanted formats can be trimmed out of the build from 面板 → AnimatedImage 格式.",
+    "description": "AnimatedImage — GIF / APNG / WebP / PNG / JPEG animated image player for Cocos Creator 3.3+ (WebP requires 3.8+). TypeScript runtime mounted read-only via asset-db.mount, with WebP decoded by wasm off-native and by a native C++ plugin on native. Unwanted formats can be trimmed out of the build from 面板 → AnimatedImage 格式.",
     "author": "animated-image",
     "main": "./main.js",
-    "editor": ">=3.8.0",
+    "editor": ">=3.3.0",
     "panels": {
         "formats": {
             "title": "AnimatedImage 格式",

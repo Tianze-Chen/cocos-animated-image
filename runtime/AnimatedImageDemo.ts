@@ -15,6 +15,7 @@ import {
     Color,
     Component,
     Label,
+    Layers,
     Node,
     Sprite,
     SpriteFrame,
@@ -60,7 +61,7 @@ export class AnimatedImageDemo extends Component {
         range: [0.5, 60, 0.5],
         tooltip: 'Interval in seconds between periodic memory log records.',
     })
-    public memoryLogInterval = 1;
+    public memoryLogInterval = 10;
 
     public pngURL = 'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/PNG_transparency_demonstration_1.png';
     public jpgURL = 'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/Example.jpg';
@@ -139,6 +140,7 @@ export class AnimatedImageDemo extends Component {
         }
 
         this._previousForceBuiltin = AnimatedImagePlayer.forceBuiltinDecoder;
+        this._ensureUILayer();
         this._buildAvatar();
         this._buildFormatButtons();
         this._buildControlButtons();
@@ -206,6 +208,42 @@ export class AnimatedImageDemo extends Component {
     }
 
     // ---- build UI ----
+
+    /**
+     * Every node this demo creates copies this.node.layer, and the UI camera
+     * only renders the UI layers — so a host node sitting on e.g. DEFAULT
+     * (an empty node created outside the 2D template) makes the whole demo
+     * silently invisible: layer filtering is not an error, nothing complains,
+     * while the component keeps running. Align the host node's layer with the
+     * nearest UITransform-bearing ancestor (the Canvas in a normal scene) and
+     * say so, so the misplacement is visible instead of mysterious.
+     */
+    private _ensureUILayer (): void {
+        let anchor: Node | null = this.node;
+        while (anchor && !anchor.getComponent(UITransform)) {
+            anchor = anchor.parent;
+        }
+        if (!anchor) {
+            console.warn(
+                '[AnimatedImageDemo] 场景里找不到带 UITransform 的祖先节点（通常是 Canvas）。'
+                + '请把本组件挂在 Canvas 下，否则 UI 可能不被任何相机渲染。',
+            );
+            if (this.node.layer !== Layers.Enum.UI_2D) {
+                console.warn(
+                    `[AnimatedImageDemo] 节点 layer（${this.node.layer}）不是 UI_2D，已自动改为 UI_2D。`,
+                );
+                this.node.layer = Layers.Enum.UI_2D;
+            }
+            return;
+        }
+        if (this.node.layer !== anchor.layer) {
+            console.warn(
+                `[AnimatedImageDemo] 节点 layer（${this.node.layer}）与 UI 父级 ${anchor.name}`
+                + `（layer ${anchor.layer}）不一致，已自动对齐——否则整个 demo 不会显示。`,
+            );
+            this.node.layer = anchor.layer;
+        }
+    }
 
     private _buildAvatar (): void {
         // 蓝色背景：放在图片节点后面，透明区域透出蓝色
@@ -350,7 +388,7 @@ export class AnimatedImageDemo extends Component {
         transform.setContentSize(900, 58);
 
         const background = node.addComponent(Sprite);
-        background.spriteFrame = builtinResMgr.get<SpriteFrame>('ui-sprite-frame');
+        background.spriteFrame = builtinResMgr.get<SpriteFrame>('default-spriteframe');
         background.color = new Color(0, 0, 0, 180);
         background.sizeMode = Sprite.SizeMode.CUSTOM;
 
@@ -382,7 +420,7 @@ export class AnimatedImageDemo extends Component {
         transform.setContentSize(w, h);
 
         const sprite = btnNode.addComponent(Sprite);
-        sprite.spriteFrame = builtinResMgr.get<SpriteFrame>('ui-sprite-frame');
+        sprite.spriteFrame = builtinResMgr.get<SpriteFrame>('default-spriteframe');
         sprite.color = new Color(80, 80, 80, 200);
         sprite.sizeMode = Sprite.SizeMode.CUSTOM;
 
