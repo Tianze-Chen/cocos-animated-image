@@ -1,6 +1,6 @@
 <!-- 内部备忘，不要复制进表单：
 商店名（提交后不可改，建议）：AnimatedImage 动图播放器（GIF / APNG / WebP）
-扩展包名：animated-image　版本：1.1.0　（必须与 package.json 完全一致）
+扩展包名：animated-image　版本：1.1.1　（必须与 package.json 完全一致）
 适配引擎：Cocos Creator 3.3+（WebP 功能 3.8+；表单勾选适配版本时按此范围）
 免费商品，无需「购买须知」段落
 -->
@@ -85,6 +85,10 @@
 
 ## 更新声明
 
+- 1.1.1
+    - 插件本体兼容 Creator 3.3+（GIF / APNG / 静态图、格式裁剪面板）
+    - WebP 默认关闭，需要 3.8+ 编辑器（正式版引擎尚未导出其依赖的 cc.wasm）
+    - Demo 内存日志默认降为 10 秒一条；文档补充裁剪面板入口与 Demo 挂载位置说明
 - 1.1.0
     - 新增 WebP 动图支持（wasm + 原生 C++ 双后端；因引擎依赖尚未进入正式版，默认关闭）
     - 新增「格式裁剪」面板：不需要的格式（TS / .wasm / 原生 C++ 三份载荷）真正不进构建产物
@@ -126,5 +130,6 @@ Cocos Creator 3.x bundles every script under a script folder and never tree-shak
 
 [Changelog]
 
+- 1.1.1　Core compatible with Creator 3.3+; WebP off by default (needs a 3.8+ editor); demo memory log defaults to one record per 10s; docs clarify the trimming-panel entry and demo mount point
 - 1.1.0　WebP support (wasm + native C++ backends, off by default — its engine dependency is not in stable releases yet); format-trimming panel; core compatible with Creator 3.3+
 - 1.0.0　GIF / APNG playback, full playback API, three data sources, demo component
