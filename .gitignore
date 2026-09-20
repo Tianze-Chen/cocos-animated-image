@@ -2,6 +2,10 @@
 # native/wasm/prebuilt/ instead, so users do not need emsdk.
 native/wasm/build/
 
+# Cocos Creator regenerates these when importing runtime/ scripts; keep them
+# machine-local. No scene/prefab in this repo references their uuids.
+*.meta
+
 # Editor / OS noise
 node_modules/
 temp/
