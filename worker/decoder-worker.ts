@@ -15,8 +15,10 @@
 import { createApngDecoder } from '../runtime/apng-decoder';
 import { createGifDecoder } from '../runtime/gif-decoder';
 import type { IAnimatedImageDecoder } from '../runtime/types';
+import { createOverlayCompositor } from './overlay-compositor';
+import type { OverlayCompositor } from './overlay-compositor';
 import { SHARED_HEADER_BYTES, bytesToB64, getAtomics, normalizeBytes } from '../runtime/worker-protocol';
-import type { AtomicsLike, WorkerRequest, WorkerResponse } from '../runtime/worker-protocol';
+import type { AtomicsLike, WorkerOverlayNote, WorkerOverlayStatsNote, WorkerRequest, WorkerResponse } from '../runtime/worker-protocol';
 
 interface WxWorkerGlobal {
     onMessage (callback: (message: unknown) => void): void;
@@ -30,8 +32,9 @@ declare const self: { postMessage?: unknown; onmessage?: unknown } | undefined;
 
 interface HostContext {
     register (handler: (message: unknown) => void): void;
-    /** transfer 仅浏览器宿主生效；微信 postMessage 是单参拷贝。批量响应传数组。 */
-    send (message: WorkerResponse, transfer?: ArrayBuffer | ArrayBuffer[]): void;
+    /** transfer 仅浏览器宿主生效；微信 postMessage 是单参拷贝。批量响应传数组。
+     *  overlay-stats 是无 id 的单向通知，与响应共用这条发送通道。 */
+    send (message: WorkerResponse | WorkerOverlayStatsNote, transfer?: ArrayBuffer | ArrayBuffer[]): void;
     transfers: boolean;
 }
 
@@ -138,6 +141,10 @@ function rememberSource (key: string, bytes: Uint8Array): void {
     }
     sourceCache.set(key, bytes);
 }
+
+// overlay 合成器（worker-offscreen 变体）。惰性：第一条 overlay-canvas 请求到达才创建 ——
+// 未启用变体时 overlay-compositor 一行都不执行（「不破坏现有四档」的 worker 侧核心保险）。
+let overlay: OverlayCompositor | null = null;
 
 // --- 通道诊断计数（定位丢消息方向：主线程侧同样逐类型计数，两侧对差 = 到达缺口） ---
 // 2026-09 真机实证链：ARQ 同 id 重传可恢复（消息真丢而非处理失败）、闸门 8 并发仍丢
@@ -397,17 +404,17 @@ const wireSend = host.send.bind(host);
     }
     if (typeof msg.id === 'number' && typeof msg.t === 'string'
         && msg.t !== 'error' && msg.t !== 'decoded' && msg.t !== 'decoded-batch'
-        && msg.t !== 'channel-stats-reply' && msg.t !== 'auto-state') {
+        && msg.t !== 'overlay-stats' && msg.t !== 'channel-stats-reply' && msg.t !== 'auto-state') {
         // auto-state 不缓存：重传须重新执行取新状态（seek/start 幂等，重执行无副作用；
         // 回旧快照会让主线程拿到过时的播放态 —— 与 channel-stats-reply 同款理由）。
-        // id 为 number 的只可能是带 id 的请求响应。
+        // id 为 number 的只可能是带 id 的请求响应（overlay-stats 无 id，上面已排除）。
         rememberResponse(msg.id, message as WorkerResponse);
     }
     wireSend(message, transfer);
 };
 
 host.register((raw) => {
-    const request = raw as WorkerRequest;
+    const request = raw as WorkerRequest | WorkerOverlayNote;
     if (!request || typeof request !== 'object' || typeof request.t !== 'string') { return; }
 
     // 诊断计数在 ARQ 门之前：计「到达 handler 的原始消息」，与主线程发送侧对差。
@@ -709,8 +716,9 @@ host.register((raw) => {
                     // destroy 失败无需上报：条目已删除，主线程也不会再用这个 handle。
                 }
             }
-            // 防御：close 打到自驱条目时同步注销（幂等），避免 worker 侧时钟继续推进
-            // 一个解码器已销毁的条目。
+            // 防御：close 打到已 attach 的 handle 时同步注销合成条目（幂等），避免 worker
+            // 侧时钟继续画一个解码器已销毁的条目。自驱条目同理注销。
+            if (overlay) { overlay.detach(request.handle); }
             autoItems.delete(request.handle);
             host.send({ t: 'closed', id: request.id, handle: request.handle });
             break;
@@ -745,6 +753,63 @@ host.register((raw) => {
                     errors: autoErrors,
                 },
             });
+            break;
+        }
+
+        // --- overlay 合成（worker-offscreen 变体）。请求带 id 有回执；通知无 id 单向。 ---
+
+        case 'overlay-canvas': {
+            try {
+                if (!overlay) { overlay = createOverlayCompositor(); }
+                const ticker = overlay.bind(request.canvas, request.width, request.height,
+                    (note) => { host.send(note); });
+                host.send({ t: 'overlay-canvas-bound', id: request.id, ticker });
+            } catch (e) {
+                host.send({ t: 'error', id: request.id, message: errorMessage(e) });
+            }
+            break;
+        }
+
+        case 'overlay-attach': {
+            try {
+                if (!overlay) { throw new Error('overlay 未 bind canvas 就 attach'); }
+                const entry = entries.get(request.handle);
+                if (!entry) { throw new Error(`unknown handle ${request.handle}`); }
+                overlay.attach(request.handle, entry.decoder, request.rect, request.playing, request.loop);
+                host.send({ t: 'overlay-attached', id: request.id, handle: request.handle });
+            } catch (e) {
+                host.send({ t: 'error', id: request.id, handle: request.handle, message: errorMessage(e) });
+            }
+            break;
+        }
+
+        case 'overlay-resize': {
+            if (overlay) { overlay.resize(request.width, request.height); }
+            break;
+        }
+
+        case 'overlay-update': {
+            if (overlay) { overlay.update(request.rects); }
+            break;
+        }
+
+        case 'overlay-set-state': {
+            if (overlay) { overlay.setState(request.handle, request.playing, request.loop); }
+            break;
+        }
+
+        case 'overlay-detach': {
+            if (overlay) { overlay.detach(request.handle); }
+            const entry = entries.get(request.handle);
+            if (entry) {
+                entries.delete(request.handle);
+                try {
+                    entry.decoder.destroy();
+                } catch (e) {
+                    // 同 close：条目已删，destroy 失败无需上报。
+                }
+            }
+            autoItems.delete(request.handle);
             break;
         }
 

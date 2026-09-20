@@ -82,6 +82,19 @@ export class AnimatedImagePlayer {
     }
 
     /**
+     * A/B：true = worker-offscreen 变体 —— 解码 + OffscreenCanvas 合成全在 worker 里
+     * （帧直接画到「就是最终显示面」的 canvas 上），主线程每帧成本归零。仅浏览器宿主可用
+     * （微信 V2 未灰度：transfer 列表被拒）；组件层由 OverlayAnimatedImage/OverlayManager
+     * 消费（DOM overlay 挂件，不进引擎渲染），不可用时原地降级 Sprite+AnimatedImage。
+     */
+    public static get forceWorkerOffscreen (): boolean {
+        return (globalThis as { __forceWorkerOffscreen?: boolean }).__forceWorkerOffscreen === true;
+    }
+    public static set forceWorkerOffscreen (value: boolean) {
+        (globalThis as { __forceWorkerOffscreen?: boolean }).__forceWorkerOffscreen = value;
+    }
+
+    /**
      * A/B：true = worker-auto 变体（方案 C）—— 播放时钟搬进 worker：worker 自驱解码、
      * 直接写 SAB 并推进 header 帧序号，主线程 tick 只轮询序号上屏 —— **每帧零消息**
      * （通道只剩 open/attach/probe/start/stop/seek 等 O(1) 控制消息；2026-09 真机定案：
