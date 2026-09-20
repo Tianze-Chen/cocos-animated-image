@@ -2,6 +2,7 @@ import type { IAnimatedImageDecoder, IDecodedFrame } from './types';
 import { sniffMime } from './mime-sniff';
 import { getDecoder } from './decoder-registry';
 import { createStaticDecoder } from './static-decoder';
+import { tryCreateWorkerDecoder } from './worker-decoder';
 import './codecs';
 
 // --- WebCodecs types (browser-only) ---
@@ -98,12 +99,26 @@ export function shouldForceBuiltin (): boolean {
     return (globalThis as { __forceBuiltinDecoder?: boolean }).__forceBuiltinDecoder === true;
 }
 
+/** A/B 开关：跳过 WebCodecs 直接走 worker 路径（浏览器里量 worker 收益用；微信本来就没有 WebCodecs）。 */
+export function shouldForceWorkerDecoder (): boolean {
+    return (globalThis as { __forceWorkerDecoder?: boolean }).__forceWorkerDecoder === true;
+}
+
 export async function createAnimatedDecoder (bytes: Uint8Array, mime: string): Promise<IAnimatedImageDecoder> {
     const actual = sniffMime(bytes, mime);
 
-    if (!shouldForceBuiltin()) {
+    // 分发顺序：WebCodecs → worker → 主线程 JS。
+    // - __forceWorkerDecoder：跳过 WebCodecs，直接落 worker（浏览器 A/B）。
+    // - __forceBuiltinDecoder：跳过前两级，纯主线程基线（A/B 的对照组）。
+    // - worker 档自身失败（无 Worker 全局 / 交付文件缺失 / 协议错误）返回 null，继续降级。
+    const forceBuiltin = shouldForceBuiltin();
+    if (!forceBuiltin && !shouldForceWorkerDecoder()) {
         const native = await tryCreateWebCodecs(bytes, actual);
         if (native) return native;
+    }
+    if (!forceBuiltin) {
+        const workerBacked = await tryCreateWorkerDecoder(bytes, actual);
+        if (workerBacked) return workerBacked;
     }
 
     return createJsFallback(bytes, actual);

@@ -19,18 +19,58 @@ import {
     Node,
     Sprite,
     SpriteFrame,
+    Texture2D,
     UITransform,
 } from 'cc';
 import { AnimatedImage } from './AnimatedImage';
 import { AnimatedImagePlayer } from './AnimatedImagePlayer';
 import { toBytes } from './bytes';
 import { sniffMime } from './mime-sniff';
+import { getWorkerDecodeStats } from './worker-decoder';
 
 const { ccclass, property } = _decorator;
 
+/** worker 统计一行：均次往返拆成「计算 + 传输」——SAB 与 copy 的差异就在传输那一项。 */
+function formatWorkerStatsLine (): string {
+    const stats = getWorkerDecodeStats();
+    if (stats.opens === 0) { return ''; }
+    const decodes = Math.max(1, stats.decodes);
+    const roundtrip = stats.roundtripMsTotal / decodes;
+    const compute = stats.computeMsTotal / decodes;
+    const transport = roundtrip - compute;
+    const mode = stats.sharedHandles > 0 ? `SAB×${stats.sharedHandles}` : 'copy';
+    const extra = stats.sharedProbeFailures > 0 ? ` 探针失败×${stats.sharedProbeFailures}` : '';
+    return `worker: ${stats.decodes}帧 avg ${roundtrip.toFixed(1)}ms（计算${compute.toFixed(1)} + 传输${transport.toFixed(1)}）${mode}${extra}`;
+}
+
 const AVATAR_SIZE = 200;
+
+/**
+ * 纯色按钮/背景用的白底 SpriteFrame(自带、packable=false)。
+ *
+ * 不能直接把 builtinResMgr 的 default-spriteframe 挂到 Sprite 上渲染:它
+ * packable=true,而贴图源是原始字节(ImageAsset.data = Uint8Array,非 DOM
+ * 图源)。动态图集在 CLEANUP_IMAGE_CACHE=false(web 默认值)时开启,会把这个
+ * 源喂给 gl.texSubImage2D 的 7 参 DOM-source 重载 → Overload resolution
+ * failed,每帧抛未捕获异常(preview 弹错误面板,页面直接不可用)。包一层
+ * packable=false 的自有帧即可绕开图集;白色 2x2 平铺染色的效果不变。
+ */
+let whiteFrame: SpriteFrame | null = null;
+function getWhiteFrame (): SpriteFrame {
+    if (!whiteFrame) {
+        const frame = new SpriteFrame();
+        frame.texture = builtinResMgr.get<Texture2D>('default-texture');
+        frame.packable = false;
+        whiteFrame = frame;
+    }
+    return whiteFrame;
+}
 const MEMORY_SAMPLE_INTERVAL = 0.5;
 const MEMORY_LOG_PREFIX = '[AnimatedImageMemory]';
+
+// 解码路径循环：AUTO（WebCodecs→worker→主线程）→ WORKER（跳过 WebCodecs，copy 传输）
+// → WORKER+SAB（SharedArrayBuffer 传输）→ BUILTIN（纯主线程）。SAB 环境不支持时自动落回 copy。
+const DECODE_PATHS = ['AUTO', 'WORKER', 'WORKER+SAB', 'BUILTIN'] as const;
 
 interface MemoryInfoLike {
     usedJSHeapSize?: number;
@@ -52,6 +92,12 @@ export class AnimatedImageDemo extends Component {
 
     @property({ tooltip: 'Force the built-in JS decoder instead of the native decoder.' })
     public forceBuiltinDecoder = false;
+
+    @property({ tooltip: 'Skip WebCodecs and decode GIF/APNG in the shared worker (A/B).' })
+    public forceWorkerDecoder = false;
+
+    @property({ tooltip: 'Worker frame transport via SharedArrayBuffer where supported; falls back to copy mode.' })
+    public forceWorkerSharedBuffer = false;
 
     @property({ tooltip: 'Write machine-readable memory snapshots to the console.' })
     public enableMemoryLog = true;
@@ -96,6 +142,9 @@ export class AnimatedImageDemo extends Component {
     private _activeIndex = 0;
     private _rate = 1;
     private _previousForceBuiltin = false;
+    private _previousForceWorker = false;
+    private _previousForceWorkerShared = false;
+    private _decodePath = 0;
     private _compareVisible = false;
     private _compareToken = 0;
     private _compareCells: { node: Node; ai: AnimatedImage; label: Label }[] = [];
@@ -140,6 +189,13 @@ export class AnimatedImageDemo extends Component {
         }
 
         this._previousForceBuiltin = AnimatedImagePlayer.forceBuiltinDecoder;
+        this._previousForceWorker = AnimatedImagePlayer.forceWorkerDecoder;
+        this._previousForceWorkerShared = AnimatedImagePlayer.forceWorkerSharedBuffer;
+        // 序列化字段 → 路径下标（三 flag 的组合里取最「高」的一档，和 _applyDecodePath 反向对应）。
+        this._decodePath = this.forceBuiltinDecoder ? 3
+            : this.forceWorkerSharedBuffer ? 2
+            : this.forceWorkerDecoder ? 1
+            : 0;
         this._ensureUILayer();
         this._buildAvatar();
         this._buildFormatButtons();
@@ -168,6 +224,8 @@ export class AnimatedImageDemo extends Component {
 
     public onDestroy (): void {
         AnimatedImagePlayer.forceBuiltinDecoder = this._previousForceBuiltin;
+        AnimatedImagePlayer.forceWorkerDecoder = this._previousForceWorker;
+        AnimatedImagePlayer.forceWorkerSharedBuffer = this._previousForceWorkerShared;
         if (this._memoryLogSession) {
             this._sampleMemory(false, 'destroy', true);
         }
@@ -349,9 +407,9 @@ export class AnimatedImageDemo extends Component {
             -185,
             260,
             44,
-            this.forceBuiltinDecoder ? 'BuiltinDecoder: ON' : 'BuiltinDecoder: OFF',
+            this._decodePathLabel(),
         );
-        btnNode.on(Button.EventType.CLICK, this._onBuiltinBtnClick, this);
+        btnNode.on(Button.EventType.CLICK, this._onDecodePathBtnClick, this);
         this._builtinBtnNode = btnNode;
 
         const labelNode = btnNode.children[0];
@@ -367,7 +425,8 @@ export class AnimatedImageDemo extends Component {
         node.setPosition(0, -245, 0);
 
         const transform = node.addComponent(UITransform);
-        transform.setContentSize(720, 100);
+        // 4 行（格式 / 路径+帧 / 控制项 / worker 统计），每行 lineHeight 24。
+        transform.setContentSize(720, 120);
 
         const label = node.addComponent(Label);
         label.color = new Color(255, 255, 255, 255);
@@ -388,7 +447,7 @@ export class AnimatedImageDemo extends Component {
         transform.setContentSize(900, 58);
 
         const background = node.addComponent(Sprite);
-        background.spriteFrame = builtinResMgr.get<SpriteFrame>('default-spriteframe');
+        background.spriteFrame = getWhiteFrame();
         background.color = new Color(0, 0, 0, 180);
         background.sizeMode = Sprite.SizeMode.CUSTOM;
 
@@ -420,7 +479,7 @@ export class AnimatedImageDemo extends Component {
         transform.setContentSize(w, h);
 
         const sprite = btnNode.addComponent(Sprite);
-        sprite.spriteFrame = builtinResMgr.get<SpriteFrame>('default-spriteframe');
+        sprite.spriteFrame = getWhiteFrame();
         sprite.color = new Color(80, 80, 80, 200);
         sprite.sizeMode = Sprite.SizeMode.CUSTOM;
 
@@ -457,6 +516,8 @@ export class AnimatedImageDemo extends Component {
         const entry = this._avatars[index];
 
         AnimatedImagePlayer.forceBuiltinDecoder = this.forceBuiltinDecoder;
+        AnimatedImagePlayer.forceWorkerDecoder = this.forceWorkerDecoder;
+        AnimatedImagePlayer.forceWorkerSharedBuffer = this.forceWorkerSharedBuffer;
         ai.loop = this.loop;
         ai.playbackRate = this._rate;
         ai.remoteURL = '';
@@ -468,7 +529,7 @@ export class AnimatedImageDemo extends Component {
 
         console.log(
             `[AnimatedImageDemo] Loading ${entry.label}: ${entry.url}, `
-            + `builtinDecoder=${this.forceBuiltinDecoder}`,
+            + `path=${DECODE_PATHS[this._decodePath]}`,
         );
     }
 
@@ -514,14 +575,26 @@ export class AnimatedImageDemo extends Component {
         if (ai) ai.playbackRate = this._rate;
     }
 
-    private _onBuiltinBtnClick (): void {
-        this.forceBuiltinDecoder = !this.forceBuiltinDecoder;
-        if (this._builtinBtnLabel) {
-            this._builtinBtnLabel.string = this.forceBuiltinDecoder
-                ? 'BuiltinDecoder: ON'
-                : 'BuiltinDecoder: OFF';
-        }
+    /** 循环解码路径并重载当前样本 —— A/B 对比的入口。 */
+    private _onDecodePathBtnClick (): void {
+        this._decodePath = (this._decodePath + 1) % DECODE_PATHS.length;
+        this._applyDecodePath();
         this._loadAvatar(this._activeIndex);
+    }
+
+    private _decodePathLabel (): string {
+        return `Path: ${DECODE_PATHS[this._decodePath]}`;
+    }
+
+    /** 路径下标 → 三个分发 flag 的组合（与 image-decoder.ts 的分发链对应）。 */
+    private _applyDecodePath (): void {
+        const path = this._decodePath;
+        this.forceBuiltinDecoder = path === 3;
+        this.forceWorkerDecoder = path === 1 || path === 2;
+        this.forceWorkerSharedBuffer = path === 2;
+        if (this._builtinBtnLabel) {
+            this._builtinBtnLabel.string = this._decodePathLabel();
+        }
     }
 
     private _refreshLabel (): void {
@@ -529,7 +602,6 @@ export class AnimatedImageDemo extends Component {
 
         const ai = this._animatedImage;
         const entry = this._avatars[this._activeIndex];
-        const decoder = this.forceBuiltinDecoder ? 'builtin (forced)' : 'native if available';
         const frame = ai && ai.frameCount > 0
             ? `${ai.currentFrame + 1}/${ai.frameCount}`
             : '-/-';
@@ -537,9 +609,11 @@ export class AnimatedImageDemo extends Component {
             ? ai.isPlaying ? 'playing' : 'paused/stopped'
             : 'no player';
 
+        const workerLine = formatWorkerStatsLine();
         this._label.string = `Avatar demo — ${entry.label}\n`
-            + `decoder: ${decoder}   frame: ${frame}   state: ${state}\n`
-            + `loop: ${this.loop}   rate: ${this._rate.toFixed(2)}`;
+            + `path: ${DECODE_PATHS[this._decodePath]}   frame: ${frame}   state: ${state}\n`
+            + `loop: ${this.loop}   rate: ${this._rate.toFixed(2)}`
+            + (workerLine ? `\n${workerLine}` : '');
     }
 
     // ---- 四图对比（简化：格子直接挂在 Demo 根节点下，与头像同结构）----
@@ -932,7 +1006,7 @@ export class AnimatedImageDemo extends Component {
             event,
             view: this._compareVisible ? 'compare' : 'avatar',
             image: entry ? entry.label : '',
-            decoder: this.forceBuiltinDecoder ? 'builtin' : 'native-auto',
+            decoder: DECODE_PATHS[this._decodePath],
             playing: !!ai && ai.isPlaying,
             loop: this.loop,
             playbackRate: this._rate,

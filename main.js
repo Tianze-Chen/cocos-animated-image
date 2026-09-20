@@ -11,17 +11,18 @@
 //    clone, a new machine, or an apply that died half way heal itself without the
 //    user having to open the panel again.
 //
-// 2. Stage the WebP wasm binary where the editor and the browser preview can find
-//    it. Both resolve `external:animated-webp.wasm` against the engine's own
-//    native/external/ directory — the editor reads it with node's fs, the preview
-//    server serves it from /engine_external/ — and neither looks inside an
-//    extension. Copying it there on load is what makes the scene view work; the
+// 2. Stage the WebP wasm binary and the decoder-worker bundle where the editor and
+//    the browser preview can find them. Both resolve `external:<name>` against the
+//    engine's own native/external/ directory — the editor reads it with node's fs,
+//    the preview server serves it from /engine_external/ — and neither looks inside
+//    an extension. Copying it there on load is what makes the scene view work; the
 //    preview HTTP endpoint alone would not cover the scene view, which does not go
 //    through it.
 //
 // Published builds take a different route: editor/build/hooks.js puts the same
-// file into the package's cocos-js/. Native platforms need neither, since they use
-// the JSB binding.
+// wasm into the package's cocos-js/, and the worker bundle into cocos-js/ (web) or
+// workers/animated-image/decoder.js plus a game.json "workers" entry (WeChat).
+// Native platforms need neither, since they use the JSB binding.
 
 const fs = require('fs');
 const path = require('path');
@@ -32,6 +33,9 @@ const PACKAGE = 'animated-image';
 const PROFILE_KEY = 'formats';
 const WASM_NAME = 'animated-webp.wasm';
 const WASM_SOURCE = path.join(__dirname, 'native', 'wasm', 'prebuilt', WASM_NAME);
+// 解码 worker bundle（GIF/APNG 离主线程）：预览从 /engine_external/ 下发，与 wasm 同一条链路。
+const WORKER_BUNDLE_NAME = 'animated-image-decoder.js';
+const WORKER_BUNDLE_SOURCE = path.join(__dirname, 'worker', 'dist', WORKER_BUNDLE_NAME);
 
 function log (msg) {
     console.log(`[${PACKAGE}] ${msg}`);
@@ -55,18 +59,18 @@ async function readFormats () {
     return trim.normalize(stored);
 }
 
-async function syncEditorWasm () {
+async function stageEngineExternal (source, name) {
     const info = await Editor.Message.request('engine', 'query-engine-info');
     const nativePath = info && info.native && info.native.path;
     if (!nativePath) {
         throw new Error('engine native path is unavailable');
     }
-    if (!fs.existsSync(WASM_SOURCE)) {
-        throw new Error(`wasm source is missing: ${WASM_SOURCE}`);
+    if (!fs.existsSync(source)) {
+        throw new Error(`source is missing: ${source}`);
     }
-    const destination = path.join(nativePath, 'external', WASM_NAME);
+    const destination = path.join(nativePath, 'external', name);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(WASM_SOURCE, destination);
+    fs.copyFileSync(source, destination);
     return destination;
 }
 
@@ -162,19 +166,33 @@ exports.load = async function load () {
         warn(`格式裁剪对齐失败，运行时按磁盘现状工作：${e && e.message}`);
     }
 
-    if (!formats.webp) {
+    if (formats.webp) {
+        try {
+            const destination = await stageEngineExternal(WASM_SOURCE, WASM_NAME);
+            log(`staged ${WASM_NAME} for the editor at ${destination}`);
+        } catch (e) {
+            // Only WebP needs this, and it degrades to a still first frame, so a
+            // failure here must not stop the extension from loading.
+            warn(`could not stage ${WASM_NAME}; WebP animation will fall back to its first frame in the editor: ${e && e.message}`);
+        }
+    } else {
         // Deliberately not deleting an already-staged copy: the same engine
         // installation may be in use by another project that still wants WebP.
         log(`skip staging ${WASM_NAME} (WebP 已裁剪)`);
-        return;
     }
-    try {
-        const destination = await syncEditorWasm();
-        log(`staged ${WASM_NAME} for the editor at ${destination}`);
-    } catch (e) {
-        // Only WebP needs this, and it degrades to a still first frame, so a
-        // failure here must not stop the extension from loading.
-        warn(`could not stage ${WASM_NAME}; WebP animation will fall back to its first frame in the editor: ${e && e.message}`);
+
+    // worker bundle 服务 GIF/APNG，两个格式都裁掉才不需要 stage。同样不删旧拷贝。
+    if (formats.gif === false && formats.apng === false) {
+        log(`skip staging ${WORKER_BUNDLE_NAME} (GIF/APNG 已裁剪)`);
+    } else {
+        try {
+            const destination = await stageEngineExternal(WORKER_BUNDLE_SOURCE, WORKER_BUNDLE_NAME);
+            log(`staged ${WORKER_BUNDLE_NAME} for the preview at ${destination}`);
+        } catch (e) {
+            // Failure just means preview keeps decoding on the main thread, which is
+            // today's behaviour — never a reason to fail the load.
+            warn(`could not stage ${WORKER_BUNDLE_NAME}; 预览将回退主线程解码: ${e && e.message}`);
+        }
     }
 };
 
