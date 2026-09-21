@@ -18,11 +18,11 @@ export class AnimatedImagePlayer {
         return isNativeAnimatedSupported(mime);
     }
 
-    public static get forceBuiltinDecoder (): boolean {
-        return (globalThis as { __forceBuiltinDecoder?: boolean }).__forceBuiltinDecoder === true;
+    public static get forceNative (): boolean {
+        return (globalThis as { __forceNativeDecoder?: boolean }).__forceNativeDecoder === true;
     }
-    public static set forceBuiltinDecoder (value: boolean) {
-        (globalThis as { __forceBuiltinDecoder?: boolean }).__forceBuiltinDecoder = value;
+    public static set forceNative (value: boolean) {
+        (globalThis as { __forceNativeDecoder?: boolean }).__forceNativeDecoder = value;
     }
 
     private _decoder: IAnimatedImageDecoder;
@@ -40,8 +40,12 @@ export class AnimatedImagePlayer {
     private _pendingDecode = false;
     private _destroyed = false;
 
+    /** 实际胜出的解码档：native/web-codecs、native/sud 或 builtin/js。 */
+    public readonly decoderLabel: string;
+
     private constructor (decoder: IAnimatedImageDecoder) {
         this._decoder = decoder;
+        this.decoderLabel = decoder.backendName ? `native/${decoder.backendName}` : 'builtin/js';
         this._frameCache = new Array<IDecodedFrame | undefined>(decoder.frameCount);
         this._frameDurations = new Array<number>(decoder.frameCount).fill(-1);
 

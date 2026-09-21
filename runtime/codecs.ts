@@ -17,4 +17,6 @@ registerDecoder('image/gif', createGifDecoder);
 import { createApngDecoder } from './apng-decoder';
 registerDecoder('image/apng', createApngDecoder);
 
-// WebP —— 已裁剪，源码在 trimmed/，勾回来即恢复
+// WebP —— 另有 ~89KB .wasm（web / 小游戏）或 ~60KB 原生 C++
+import { createWebpDecoder } from './webp-decoder';
+registerDecoder('image/webp', createWebpDecoder);

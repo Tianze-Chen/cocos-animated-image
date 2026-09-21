@@ -56,8 +56,9 @@ const NATIVE_PLATFORMS = ['android', 'ios', 'windows', 'mac'];
  *
  * Everything not listed here is core and never moves: AnimatedImage.ts,
  * AnimatedImagePlayer.ts, image-decoder.ts, static-decoder.ts, decoder-registry.ts,
- * mime-sniff.ts, bytes.ts, types.ts. PNG / JPEG stills and the WebP first-frame
- * fallback all run through static-decoder.ts.
+ * mime-sniff.ts, bytes.ts, types.ts (codecs.ts / index.ts / backends.ts are
+ * generated files that follow the checkboxes). PNG / JPEG stills and the WebP
+ * first-frame fallback all run through static-decoder.ts.
  */
 const GROUPS = {
     gif: {
@@ -75,6 +76,11 @@ const GROUPS = {
         note: '另有 ~89KB .wasm（web / 小游戏）或 ~60KB 原生 C++',
         entries: ['webp-decoder.ts', 'webp'],
     },
+    native: {
+        label: '原生解码后端',
+        note: 'WebCodecs（浏览器）/ SUD（Sud 平台）逐帧解码，不支持的环境自动回退 JS 解码',
+        entries: ['native-backend'],
+    },
     demo: {
         label: 'Demo 组件',
         note: '演示用，场景里挂过 AnimatedImageDemo 的话关掉会让那个组件丢失',
@@ -85,13 +91,16 @@ const GROUPS = {
 const GROUP_KEYS = Object.keys(GROUPS);
 
 /**
- * The shipped default set, used wherever a stored config has gaps. WebP is off:
- * its off-native backend needs an engine that exports cc.wasm (cocos/cocos4#306)
- * and no stable release has that yet, so defaulting it on would ship ~113KB that
- * nothing can load. The other three are on.
+ * The shipped default set, used wherever a stored config has gaps. WebP is on:
+ * the native backends decode animated WebP on web (WebCodecs) and Sud (SUD)
+ * without the wasm, and where neither exists it degrades to a first-frame still
+ * with a warning instead of failing — the ~113KB it ships is the price of that
+ * working out of the box (trim it in the panel if the targets never decode
+ * WebP). The native backends are on: a few KB of glue that lets every capable
+ * host decode without shipping a JS codec at all. The rest are on.
  */
 function defaults () {
-    return { gif: true, apng: true, webp: false, demo: true };
+    return { gif: true, apng: true, webp: true, native: true, demo: true };
 }
 
 /** Coerce anything (missing keys, stale keys, non-booleans) into a full valid set. */
@@ -252,6 +261,51 @@ function renderIndex (formats, absent) {
 }
 
 /**
+ * runtime/backends.ts — the native-decoder bridge. Generated like codecs.ts but
+ * driven by the `native` group alone. Present: register the platform backends in
+ * priority order and re-export the adapter entry points. Trimmed/missing: stub
+ * exports so image-decoder.ts still compiles and every open silently takes the
+ * JS path.
+ */
+function renderBackends (formats, absent) {
+    const lines = [
+        '/**',
+        ' * Animated Image — 原生后端装配（生成文件）',
+        ' *',
+        ...GENERATED_HEADER,
+        ' */',
+    ];
+    if ((absent && absent.native) || !formats.native) {
+        const reason = absent && absent.native
+            ? '已勾选但源码缺失，本次未启用（见扩展日志）'
+            : '已裁剪，源码在 trimmed/，勾回来即恢复';
+        lines.push(
+            `// ${GROUPS.native.label} —— ${reason}`,
+            '// 占位签名与真实实现一致，image-decoder.ts 在两种状态下都原样编译。',
+            'export const tryCreateNativeDecoder = (_bytes: Uint8Array, _mime: string): Promise<null> => Promise.resolve(null);',
+            'export const isNativeAnimatedSupported = (): boolean => false;',
+            '',
+        );
+        return lines.join('\n');
+    }
+    lines.push(
+        "import { registerNativeBackend } from './native-backend/backend-registry';",
+        "import { tryCreateNativeDecoder, isNativeAnimatedSupported } from './native-backend/adapter';",
+        "import { webImageBackend } from './native-backend/backend-web';",
+        "import { sudImageBackend } from './native-backend/backend-sud';",
+        '',
+        '// 注册顺序即分发优先级：web 在前 —— 双后端并存的宿主优先走标准 API，',
+        '// Sud 宿主上 web 的 available() 恒 false，自然落到 SUD。',
+        'registerNativeBackend(webImageBackend);',
+        'registerNativeBackend(sudImageBackend);',
+        '',
+        'export { tryCreateNativeDecoder, isNativeAnimatedSupported };',
+        '',
+    );
+    return lines.join('\n');
+}
+
+/**
  * Write only when the content really differs, so an idempotent reconcile does not
  * churn mtimes (which would make asset-db reimport for nothing).
  *
@@ -374,6 +428,9 @@ function reconcile (rawFormats) {
     if (writeIfChanged(path.join(RUNTIME_DIR, 'index.ts'), renderIndex(formats, absent))) {
         report.rewrote.push('runtime/index.ts');
     }
+    if (writeIfChanged(path.join(RUNTIME_DIR, 'backends.ts'), renderBackends(formats, absent))) {
+        report.rewrote.push('runtime/backends.ts');
+    }
     // The payload switches follow what is really available, not what was asked
     // for, so a group whose source vanished does not ship a .wasm nothing loads.
     if (writeTrimJson(effective)) report.rewrote.push('editor/build/trim.json');
@@ -408,4 +465,5 @@ module.exports = {
     describe,
     renderCodecs,
     renderIndex,
+    renderBackends,
 };

@@ -4,7 +4,12 @@
     "engine-version": ">=3.8.0",
     "author": "animated-image",
     "description": "Animated WebP decoding for the animated-image plugin: libwebp demuxer + __animatedImageWebP JSB binding.",
-    "platforms": [],
+    "platforms": [
+        "android",
+        "ios",
+        "windows",
+        "mac"
+    ],
     "modules": [
         {
             "target": "animated_webp"

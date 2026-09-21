@@ -1,141 +1,44 @@
-import type { IAnimatedImageDecoder, IDecodedFrame } from './types';
+import type { IAnimatedImageDecoder } from './types';
 import { sniffMime } from './mime-sniff';
 import { getDecoder } from './decoder-registry';
 import { createStaticDecoder } from './static-decoder';
+import { tryCreateNativeDecoder, isNativeAnimatedSupported as isNativeBackendAvailable } from './backends';
 import './codecs';
-
-// --- WebCodecs types (browser-only) ---
-
-interface WebImageDecoderTrack {
-    frameCount: number;
-    repetitionCount: number;
-}
-interface WebImageDecoderResult {
-    image: {
-        displayWidth: number;
-        displayHeight: number;
-        duration: number | null;
-        close (): void;
-    };
-    complete: boolean;
-}
-interface WebImageDecoder {
-    tracks: { ready: Promise<void>; selectedTrack: WebImageDecoderTrack | null };
-    decode (options: { frameIndex: number }): Promise<WebImageDecoderResult>;
-    close (): void;
-}
-interface WebImageDecoderCtor {
-    new (init: { data: BufferSource; type: string }): WebImageDecoder;
-    isTypeSupported (type: string): Promise<boolean>;
-}
-
-function getImageDecoderCtor (): WebImageDecoderCtor | undefined {
-    return (globalThis as { ImageDecoder?: WebImageDecoderCtor }).ImageDecoder;
-}
-
-// --- WebCodecs decoder (web platform with WebCodecs support) ---
-
-class WebCodecsDecoder implements IAnimatedImageDecoder {
-    public readonly width: number;
-    public readonly height: number;
-    public readonly frameCount: number;
-    public readonly loopCount: number;
-
-    private _decoder: WebImageDecoder | null;
-    private _canvas: OffscreenCanvas | HTMLCanvasElement;
-    private _ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
-
-    constructor (decoder: WebImageDecoder, width: number, height: number, frameCount: number, loopCount: number) {
-        this._decoder = decoder;
-        this.width = width;
-        this.height = height;
-        this.frameCount = frameCount;
-        this.loopCount = loopCount;
-        if (typeof OffscreenCanvas !== 'undefined') {
-            this._canvas = new OffscreenCanvas(width, height);
-        } else {
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            this._canvas = canvas;
-        }
-        this._ctx = this._canvas.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D;
-    }
-
-    public async decodeFrame (index: number): Promise<IDecodedFrame> {
-        if (!this._decoder) {
-            throw new Error('animated image decoder has been destroyed');
-        }
-        const result = await this._decoder.decode({ frameIndex: index });
-        const videoFrame = result.image;
-        try {
-            this._ctx.clearRect(0, 0, this.width, this.height);
-            this._ctx.drawImage(videoFrame as unknown as CanvasImageSource, 0, 0);
-            const imageData = this._ctx.getImageData(0, 0, this.width, this.height);
-            const data = new Uint8Array(imageData.data.buffer.slice(0));
-            const duration = videoFrame.duration != null ? videoFrame.duration / 1000 : 0;
-            return { data, duration };
-        } finally {
-            videoFrame.close();
-        }
-    }
-
-    public destroy (): void {
-        if (this._decoder) {
-            this._decoder.close();
-            this._decoder = null;
-        }
-    }
-}
 
 // --- Public API ---
 
 export function isNativeAnimatedSupported (mime: string): boolean {
-    return typeof getImageDecoderCtor() !== 'undefined';
+    // mime 保留在签名里（既有 API）。原生档可用性只取决于宿主上是否注册了任一
+    // 解码后端（web-codecs / sud，见 backends.ts）；具体格式支持在
+    // createAnimatedDecoder 里逐格式探测，不支持自动落 JS 解码，调用方无需关心。
+    void mime;
+    return isNativeBackendAvailable();
 }
 
-export function shouldForceBuiltin (): boolean {
-    return (globalThis as { __forceBuiltinDecoder?: boolean }).__forceBuiltinDecoder === true;
+export function shouldForceNative (): boolean {
+    return (globalThis as { __forceNativeDecoder?: boolean }).__forceNativeDecoder === true;
 }
 
+/**
+ * 解码器分发口。两级：平台原生后端（WebCodecs / SUD，装配见 backends.ts）→
+ * JS 解码器（decoder-registry + 静图兜底）。原生档内部自带逐后端降级与日志，
+ * 两级之间静默回落，最后一级不认识格式才 reject。
+ *
+ * forceNative 是两级行为的检查阀：开启后原生档必须成功 —— 正常路径的静默
+ * 回退会把原生层的失败全部吞掉，测试原生后端时让它响亮报错而不是悄悄落 JS。
+ */
 export async function createAnimatedDecoder (bytes: Uint8Array, mime: string): Promise<IAnimatedImageDecoder> {
     const actual = sniffMime(bytes, mime);
 
-    if (!shouldForceBuiltin()) {
-        const native = await tryCreateWebCodecs(bytes, actual);
-        if (native) return native;
+    const native = await tryCreateNativeDecoder(bytes, actual);
+    if (native) return native;
+
+    if (shouldForceNative()) {
+        return Promise.reject(new Error(
+            `[animated-image] forceNative 已开启，但 ${actual} 没有可用的原生解码后端`));
     }
 
     return createJsFallback(bytes, actual);
-}
-
-// --- WebCodecs path (web only) ---
-
-async function tryCreateWebCodecs (bytes: Uint8Array, mime: string): Promise<IAnimatedImageDecoder | null> {
-    const Ctor = getImageDecoderCtor();
-    if (!Ctor) return null;
-    try {
-        if (typeof Ctor.isTypeSupported === 'function' && !(await Ctor.isTypeSupported(mime))) {
-            return null;
-        }
-        const decoder = new Ctor({ data: bytes, type: mime });
-        await decoder.tracks.ready;
-        const track = decoder.tracks.selectedTrack;
-        if (!track || !track.frameCount) {
-            decoder.close();
-            return null;
-        }
-        const first = await decoder.decode({ frameIndex: 0 });
-        const width = first.image.displayWidth;
-        const height = first.image.displayHeight;
-        first.image.close();
-        const repetition = track.repetitionCount;
-        const loopCount = (repetition === Infinity || repetition < 0) ? 0 : repetition;
-        return new WebCodecsDecoder(decoder, width, height, track.frameCount, loopCount);
-    } catch (e) {
-        console.warn(`[animated-image] WebCodecs ImageDecoder failed for ${mime}: ${String(e)}`);
-        return null;
-    }
 }
 
 // --- JS fallback (all platforms) ---

@@ -64,7 +64,8 @@
                     "default": {
                         "gif": true,
                         "apng": true,
-                        "webp": false,
+                        "webp": true,
+                        "native": true,
                         "demo": true
                     }
                 }

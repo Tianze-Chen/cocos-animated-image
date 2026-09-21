@@ -16,13 +16,13 @@
 - Cocos Creator 原生不能播动图：GIF / APNG / WebP 当资源用只能拿到第一帧，想播就得自己写解码器。本插件把动图的解码和播放做成了一个组件，挂上就能播。
 - 接入动图通常要引第三方库甚至 wasm，还要自己抹平平台差异。本插件 GIF / APNG 用内置纯 TypeScript 解码器，零第三方依赖，Web / 小游戏 / 原生行为一致。
 - 包体焦虑：Creator 3.x 把脚本目录下每个脚本都打进 bundle，不做未引用脚本的 tree-shaking，带着用不到的解码器就是白涨体积。本插件自带「格式裁剪」面板，勾掉用不到的格式，TS、.wasm、原生 C++ 三份载荷真正从构建产物消失。
-- WebP 的引擎依赖（cc.wasm 导出）尚未进入任何正式版引擎，因此 WebP 默认关闭，不白白占用包体；引擎就绪或需要原生平台时一键开启。
+- WebP 默认开启：web / Sud 宿主由原生解码后端直接硬解；其余环境的 wasm 后端依赖引擎导出 cc.wasm（正式版引擎尚未包含），会自动降级为首帧静态图，不会崩溃；不需要时在面板一键裁掉，不白占包体。
 
 **主要功能**
 
 ▪ 一个组件覆盖 GIF / APNG / WebP 动图 + PNG / JPEG 静态图
 ▪ GIF / APNG 纯 TS 实现，无第三方依赖，无需 wasm
-▪ WebP 双后端：非原生走 wasm，原生走自动编译的 C++ 插件（JSB），出包即用；因引擎依赖尚未进入正式版，默认关闭（见安装注意事项）
+▪ WebP 多后端逐级降级：web / Sud 原生硬解（WebCodecs / SUD）→ wasm → 原生 C++ 插件（JSB，自动编译）→ 首帧静态图，出包即用（见安装注意事项）
 ▪ 完整播放控制：play / pause / resume / stop / seekToFrame、播放速率 0~10x、循环开关；frameCount / duration / currentFrame / isPlaying 可读
 ▪ 三种数据来源：BufferAsset（clip）/ 远程 URL / ImageAsset
 ▪ Web 平台优先使用浏览器 WebCodecs 硬解，不可用时自动回退内置解码器
@@ -35,7 +35,7 @@
 ▪ 插件本体（GIF / APNG / 静态图、面板、裁剪）兼容 Creator 3.3+；WebP 需要 3.8+ 编辑器
 ▪ 必须安装到 `<你的工程>/extensions/` 目录，**不要装到全局目录**——格式裁剪会移动源码文件，全局安装时多个工程共用同一份 runtime 会互相干扰
 ▪ 安装后重启编辑器；`temp/logs/project.log` 出现 `[animated-image] extension loaded` 即加载成功
-▪ WebP 默认关闭：正式版引擎尚未导出其依赖的 cc.wasm，非原生平台开启后也会降级为首帧静态图（不崩溃）；原生平台走 C++ 插件，仅覆盖 Android / iOS / Windows / macOS，Native Simulator 不支持
+▪ WebP 默认开启：web（WebCodecs）/ Sud（SUD）原生硬解，不依赖引擎；其余环境 wasm 后端需引擎导出 cc.wasm（正式版尚未包含），缺省时降级为首帧静态图（不崩溃）；原生平台走 C++ 插件，仅覆盖 Android / iOS / Windows / macOS，Native Simulator 不支持
 
 ## 使用教程
 

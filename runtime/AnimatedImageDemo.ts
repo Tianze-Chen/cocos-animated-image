@@ -2,7 +2,7 @@
  * AnimatedImageDemo - Avatar-style animated image showcase.
  *
  * Displays a fixed-size "avatar" that switches between remote images of different
- * formats (PNG / JPG / GIF / APNG) via on-screen buttons.  All formats go
+ * formats (PNG / JPG / GIF / APNG / WebP) via on-screen buttons.  All formats go
  * through AnimatedImage in REMOTE mode — static images are supported too.
  *
  * Control buttons: Play/Pause, Restart, Loop, Rate+, Rate-
@@ -10,7 +10,6 @@
 
 import {
     _decorator,
-    builtinResMgr,
     Button,
     Color,
     Component,
@@ -19,6 +18,7 @@ import {
     Node,
     Sprite,
     SpriteFrame,
+    Texture2D,
     UITransform,
 } from 'cc';
 import { AnimatedImage } from './AnimatedImage';
@@ -31,6 +31,23 @@ const { ccclass, property } = _decorator;
 const AVATAR_SIZE = 200;
 const MEMORY_SAMPLE_INTERVAL = 0.5;
 const MEMORY_LOG_PREFIX = '[AnimatedImageMemory]';
+
+// Demo 按钮的底图。不用内置 default-spriteframe：它的 ImageAsset 装的是原始
+// Uint8Array 像素，3.8 的动态合图把它喂给只接受 TexImageSource 的
+// texSubImage2D 重载，每帧抛 "Overload resolution failed"。自建这张
+// packable=false 的白图进不了合图，渲染效果（白图 + Sprite.color 染色）一致。
+let whiteFrameCache: SpriteFrame | null = null;
+function whiteSpriteFrame (): SpriteFrame {
+    if (whiteFrameCache) { return whiteFrameCache; }
+    const texture = new Texture2D();
+    texture.reset({ width: 2, height: 2, format: Texture2D.PixelFormat.RGBA8888, mipmapLevel: 1 });
+    texture.uploadData(new Uint8Array(16).fill(255), 0);
+    const frame = new SpriteFrame();
+    frame.texture = texture;
+    frame.packable = false;
+    whiteFrameCache = frame;
+    return frame;
+}
 
 interface MemoryInfoLike {
     usedJSHeapSize?: number;
@@ -50,8 +67,8 @@ export class AnimatedImageDemo extends Component {
     @property({ tooltip: 'Loop the animation.' })
     public loop = true;
 
-    @property({ tooltip: 'Force the built-in JS decoder instead of the native decoder.' })
-    public forceBuiltinDecoder = false;
+    @property({ tooltip: 'Force the native decoders: no JS fallback, fail loudly when unavailable.' })
+    public forceNative = true;
 
     @property({ tooltip: 'Write machine-readable memory snapshots to the console.' })
     public enableMemoryLog = true;
@@ -63,11 +80,19 @@ export class AnimatedImageDemo extends Component {
     })
     public memoryLogInterval = 10;
 
+    @property({ tooltip: 'Sample PNG url. Point it at your own bucket for testing.' })
     public pngURL = 'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/PNG_transparency_demonstration_1.png';
+    @property({ tooltip: 'Sample JPEG url. Point it at your own bucket for testing.' })
     public jpgURL = 'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/Example.jpg';
+    @property({ tooltip: 'Sample GIF url. Point it at your own bucket for testing.' })
     public gifURL = 'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/Loading_icon.gif';
+    @property({ tooltip: 'Sample APNG url. Point it at your own bucket for testing.' })
     public apngURL = 'https://p6.hellobixin.com/bx-user/495a7aa303a3443c90bfc3ee7549a3d8.png';
+    @property({ tooltip: 'Second sample APNG url. Point it at your own bucket for testing.' })
     public apng2URL = 'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/Animated_PNG_example_bouncing_beach_ball.png';
+    // webmproject 官方动画样例（已转存到 ctztest 桶；google 源国内常超时）。
+    @property({ tooltip: 'Sample animated WebP url. Point it at your own bucket for testing.' })
+    public webpURL = 'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/dancing_banana2.lossless.webp';
     public compareURLs: string[] = [
         'https://p6.hellobixin.com/bx-user/cd372589bb394cd29825232664a9df3b.png',
         'https://p6.hellobixin.com/bx-user/495a7aa303a3443c90bfc3ee7549a3d8.png',
@@ -80,6 +105,9 @@ export class AnimatedImageDemo extends Component {
         'https://p6.hellobixin.com/bx-user/9e7ee9bc3a6e427988b0ee6e50052b56.png',
         'https://p6.hellobixin.com/bx-user/c2c54061eb9948109d9b795a67adf43a.png',
         'https://p6.hellobixin.com/bx-user/c7acc39d919b45a89b5b2978783b481e.gif',
+        'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/plasma_1024_lossless.webp',
+        'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/plasma_1024_lossy.webp',
+        'https://ctztest-1306932836.cos.ap-guangzhou.myqcloud.com/dancing_banana2.lossless.webp',
     ];
 
     private _animatedImage: AnimatedImage | null = null;
@@ -87,18 +115,19 @@ export class AnimatedImageDemo extends Component {
     private _avatarBgNode: Node | null = null;
     private _statusNode: Node | null = null;
     private _label: Label | null = null;
-    private _builtinBtnNode: Node | null = null;
-    private _builtinBtnLabel: Label | null = null;
+    private _nativeBtnNode: Node | null = null;
+    private _nativeBtnLabel: Label | null = null;
     private _formatBtnNodes: Node[] = [];
     private _controlBtnNodes: Node[] = [];
     private _loopBtnLabel: Label | null = null;
     private _avatars: { label: string; url: string }[] = [];
     private _activeIndex = 0;
     private _rate = 1;
-    private _previousForceBuiltin = false;
+    private _previousForceNative = false;
     private _compareVisible = false;
     private _compareToken = 0;
     private _compareCells: { node: Node; ai: AnimatedImage; label: Label }[] = [];
+    private _compareBackNode: Node | null = null;
     private _totalLabel: Label | null = null;
     private _totalNode: Node | null = null;
     private _memoryNode: Node | null = null;
@@ -132,6 +161,7 @@ export class AnimatedImageDemo extends Component {
             { label: 'GIF',  url: this.gifURL },
             { label: 'APNG',  url: this.apngURL },
             { label: 'APNG2', url: this.apng2URL },
+            { label: 'WebP', url: this.webpURL },
         ].filter(e => !!e.url);
 
         if (this._avatars.length === 0) {
@@ -139,12 +169,13 @@ export class AnimatedImageDemo extends Component {
             return;
         }
 
-        this._previousForceBuiltin = AnimatedImagePlayer.forceBuiltinDecoder;
+        this._previousForceNative = AnimatedImagePlayer.forceNative;
         this._ensureUILayer();
         this._buildAvatar();
         this._buildFormatButtons();
         this._buildControlButtons();
-        this._buildBuiltinButton();
+        this._buildNativeButton();
+        this._buildCompareBackButton();
         this._buildLabel();
         this._buildMemoryMonitor();
         this._startMemoryMonitor();
@@ -167,7 +198,7 @@ export class AnimatedImageDemo extends Component {
     }
 
     public onDestroy (): void {
-        AnimatedImagePlayer.forceBuiltinDecoder = this._previousForceBuiltin;
+        AnimatedImagePlayer.forceNative = this._previousForceNative;
         if (this._memoryLogSession) {
             this._sampleMemory(false, 'destroy', true);
         }
@@ -177,7 +208,7 @@ export class AnimatedImageDemo extends Component {
         if (this._avatarNode && this._avatarNode.isValid) this._avatarNode.destroy();
         if (this._statusNode && this._statusNode.isValid) this._statusNode.destroy();
         if (this._memoryNode && this._memoryNode.isValid) this._memoryNode.destroy();
-        if (this._builtinBtnNode && this._builtinBtnNode.isValid) this._builtinBtnNode.destroy();
+        if (this._nativeBtnNode && this._nativeBtnNode.isValid) this._nativeBtnNode.destroy();
         for (const n of this._formatBtnNodes) {
             if (n && n.isValid) n.destroy();
         }
@@ -189,18 +220,20 @@ export class AnimatedImageDemo extends Component {
             if (c.node && c.node.isValid) c.node.destroy();
         }
         if (this._totalNode && this._totalNode.isValid) this._totalNode.destroy();
+        if (this._compareBackNode && this._compareBackNode.isValid) this._compareBackNode.destroy();
 
         this._avatarNode = null;
         this._avatarBgNode = null;
         this._statusNode = null;
-        this._builtinBtnNode = null;
-        this._builtinBtnLabel = null;
+        this._nativeBtnNode = null;
+        this._nativeBtnLabel = null;
         this._loopBtnLabel = null;
         this._formatBtnNodes.length = 0;
         this._controlBtnNodes.length = 0;
         this._compareCells.length = 0;
         this._totalLabel = null;
         this._totalNode = null;
+        this._compareBackNode = null;
         this._memoryLabel = null;
         this._memoryNode = null;
         this._label = null;
@@ -255,7 +288,10 @@ export class AnimatedImageDemo extends Component {
         const bgTransform = bgNode.addComponent(UITransform);
         bgTransform.setContentSize(AVATAR_SIZE, AVATAR_SIZE);
         const bgSprite = bgNode.addComponent(Sprite);
+        // CUSTOM 必须在赋 spriteFrame 之前：RAW 模式下赋图会把 UITransform
+        // 改写成贴图原始尺寸，300×300 的蓝底就缩成贴图大小了。
         bgSprite.sizeMode = Sprite.SizeMode.CUSTOM;
+        bgSprite.spriteFrame = whiteSpriteFrame();
         bgSprite.color = new Color(0, 120, 255, 255);
         this._avatarBgNode = bgNode;
 
@@ -310,7 +346,7 @@ export class AnimatedImageDemo extends Component {
             { label: `Loop: ${this.loop ? 'ON' : 'OFF'}`, handler: (): void => this._toggleLoop() },
             { label: 'Rate+',     handler: (): void => this._changeRate(0.25) },
             { label: 'Rate-',     handler: (): void => this._changeRate(-0.25) },
-            { label: '四图对比',  handler: (): void => this._toggleCompare() },
+            { label: '多图对比',  handler: (): void => this._toggleCompare() },
         ];
 
         const btnWidth = 100;
@@ -342,22 +378,30 @@ export class AnimatedImageDemo extends Component {
         }
     }
 
-    private _buildBuiltinButton (): void {
+    private _buildNativeButton (): void {
         const btnNode = this._createButton(
-            'BuiltinDecoderBtn',
+            'ForceNativeBtn',
             0,
             -185,
             260,
             44,
-            this.forceBuiltinDecoder ? 'BuiltinDecoder: ON' : 'BuiltinDecoder: OFF',
+            this.forceNative ? 'ForceNative: ON' : 'ForceNative: OFF',
         );
-        btnNode.on(Button.EventType.CLICK, this._onBuiltinBtnClick, this);
-        this._builtinBtnNode = btnNode;
+        btnNode.on(Button.EventType.CLICK, this._onNativeBtnClick, this);
+        this._nativeBtnNode = btnNode;
 
         const labelNode = btnNode.children[0];
         if (labelNode) {
-            this._builtinBtnLabel = labelNode.getComponent(Label);
+            this._nativeBtnLabel = labelNode.getComponent(Label);
         }
+    }
+
+    /** 多图对比视图里的返回键：对比模式会藏掉所有常规按钮，没有它就回不来了。 */
+    private _buildCompareBackButton (): void {
+        const btnNode = this._createButton('CompareBack', 0, -295, 160, 44, '← 返回');
+        btnNode.on(Button.EventType.CLICK, this._toggleCompare, this);
+        btnNode.active = false;   // 只在对比视图显示
+        this._compareBackNode = btnNode;
     }
 
     private _buildLabel (): void {
@@ -388,9 +432,9 @@ export class AnimatedImageDemo extends Component {
         transform.setContentSize(900, 58);
 
         const background = node.addComponent(Sprite);
-        background.spriteFrame = builtinResMgr.get<SpriteFrame>('default-spriteframe');
-        background.color = new Color(0, 0, 0, 180);
         background.sizeMode = Sprite.SizeMode.CUSTOM;
+        background.spriteFrame = whiteSpriteFrame();
+        background.color = new Color(0, 0, 0, 180);
 
         const labelNode = new Node('MemoryLabel');
         labelNode.parent = node;
@@ -420,9 +464,11 @@ export class AnimatedImageDemo extends Component {
         transform.setContentSize(w, h);
 
         const sprite = btnNode.addComponent(Sprite);
-        sprite.spriteFrame = builtinResMgr.get<SpriteFrame>('default-spriteframe');
-        sprite.color = new Color(80, 80, 80, 200);
+        // CUSTOM 必须在赋 spriteFrame 之前：RAW 模式下赋图会把上面设好的
+        // w×h 点击区改写成贴图原始尺寸（自建白图 2×2 → 按钮点不中）。
         sprite.sizeMode = Sprite.SizeMode.CUSTOM;
+        sprite.spriteFrame = whiteSpriteFrame();
+        sprite.color = new Color(80, 80, 80, 200);
 
         const labelNode = new Node('Label');
         labelNode.parent = btnNode;
@@ -456,7 +502,7 @@ export class AnimatedImageDemo extends Component {
         this._activeIndex = index;
         const entry = this._avatars[index];
 
-        AnimatedImagePlayer.forceBuiltinDecoder = this.forceBuiltinDecoder;
+        AnimatedImagePlayer.forceNative = this.forceNative;
         ai.loop = this.loop;
         ai.playbackRate = this._rate;
         ai.remoteURL = '';
@@ -468,7 +514,7 @@ export class AnimatedImageDemo extends Component {
 
         console.log(
             `[AnimatedImageDemo] Loading ${entry.label}: ${entry.url}, `
-            + `builtinDecoder=${this.forceBuiltinDecoder}`,
+            + `forceNative=${this.forceNative}`,
         );
     }
 
@@ -514,12 +560,12 @@ export class AnimatedImageDemo extends Component {
         if (ai) ai.playbackRate = this._rate;
     }
 
-    private _onBuiltinBtnClick (): void {
-        this.forceBuiltinDecoder = !this.forceBuiltinDecoder;
-        if (this._builtinBtnLabel) {
-            this._builtinBtnLabel.string = this.forceBuiltinDecoder
-                ? 'BuiltinDecoder: ON'
-                : 'BuiltinDecoder: OFF';
+    private _onNativeBtnClick (): void {
+        this.forceNative = !this.forceNative;
+        if (this._nativeBtnLabel) {
+            this._nativeBtnLabel.string = this.forceNative
+                ? 'ForceNative: ON'
+                : 'ForceNative: OFF';
         }
         this._loadAvatar(this._activeIndex);
     }
@@ -529,7 +575,9 @@ export class AnimatedImageDemo extends Component {
 
         const ai = this._animatedImage;
         const entry = this._avatars[this._activeIndex];
-        const decoder = this.forceBuiltinDecoder ? 'builtin (forced)' : 'native if available';
+        // 实际胜出的解码档（native/web-codecs、native/sud、builtin/js）+ 本次选择的模式
+        const actual = ai && ai.player ? ai.player.decoderLabel : 'pending';
+        const decoder = `${actual}${this.forceNative ? ' (forced)' : ' (auto)'}`;
         const frame = ai && ai.frameCount > 0
             ? `${ai.currentFrame + 1}/${ai.frameCount}`
             : '-/-';
@@ -556,7 +604,7 @@ export class AnimatedImageDemo extends Component {
     private _showCompare (): void {
         if (this._avatarNode) this._avatarNode.active = false;
         if (this._avatarBgNode) this._avatarBgNode.active = false;
-        if (this._builtinBtnNode) this._builtinBtnNode.active = false;
+        if (this._nativeBtnNode) this._nativeBtnNode.active = false;
         if (this._statusNode) this._statusNode.active = false;
         for (const n of this._formatBtnNodes) n.active = false;
         for (const n of this._controlBtnNodes) n.active = false;
@@ -568,6 +616,7 @@ export class AnimatedImageDemo extends Component {
             c.node.active = true;
         }
         if (this._totalNode) this._totalNode.active = true;
+        if (this._compareBackNode) this._compareBackNode.active = true;
 
         this._sampleMemory(false, 'compare-show', true);
         void this._runCompare();
@@ -579,10 +628,11 @@ export class AnimatedImageDemo extends Component {
             c.node.active = false;
         }
         if (this._totalNode) this._totalNode.active = false;
+        if (this._compareBackNode) this._compareBackNode.active = false;
 
         if (this._avatarNode) this._avatarNode.active = true;
         if (this._avatarBgNode) this._avatarBgNode.active = true;
-        if (this._builtinBtnNode) this._builtinBtnNode.active = true;
+        if (this._nativeBtnNode) this._nativeBtnNode.active = true;
         if (this._statusNode) this._statusNode.active = true;
         for (const n of this._formatBtnNodes) n.active = true;
         for (const n of this._controlBtnNodes) n.active = true;
@@ -932,7 +982,8 @@ export class AnimatedImageDemo extends Component {
             event,
             view: this._compareVisible ? 'compare' : 'avatar',
             image: entry ? entry.label : '',
-            decoder: this.forceBuiltinDecoder ? 'builtin' : 'native-auto',
+            decoder: this.forceNative ? 'native-forced' : 'native-auto',
+            decoderActual: ai && ai.player ? ai.player.decoderLabel : null,
             playing: !!ai && ai.isPlaying,
             loop: this.loop,
             playbackRate: this._rate,
